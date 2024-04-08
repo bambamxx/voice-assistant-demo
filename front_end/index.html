@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Voice Assistant</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #161F29;
+            font-family: 'IBM Plex Sans'
+        }
+
+        #recordButton {
+            padding: 20px 40px;
+            font-size: 24px;
+            background-color: #00BDA5;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        #audioPlayer {
+            display: none !important;
+            /* Hide the audio player */
+        }
+
+        #recordedAudio {
+            display: none !important;
+            /* Hide the audio player */
+        }
+
+        h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: white;
+            font-weight: bold !important;
+        }
+
+        .par {
+            color: white;
+            font-size: 24px;
+            width: 500px;
+            text-align: center;
+        }
+
+        #logo {
+            position: absolute;
+            bottom: 40px;
+            width: 400px;
+        }
+
+        #recordButton {
+            padding: 20px 40px;
+            font-size: 24px;
+            background-color: #00BDA5;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+        }
+
+        #recordButton.recording {
+            background-color: #FF5252;
+        }
+
+        #recordButton.analyzing,
+        #recordButton.talking {
+            background-color: #BDBDBD;
+            cursor: not-allowed;
+        }
+
+        #recordButton:disabled {
+            opacity: 0.6;
+        }
+    </style>
+</head>
+
+<body>
+    <div>
+        <h1>Seaplane Voice Assistant</h1>
+    </div>
+    <button id="recordButton">Hold to Record</button>
+    <p class="par">
+        I am a RAG-enabled voice assistant powered by multiple LLMs build by Seaplane. My main source of knowledge is
+        Zephyr-7b, but
+        my RAG elements
+        give me access to live data about stocks, weather, and breweries.
+        <br />
+        <br />
+        I run my models on edge GPUs for increased performance.
+    </p>
+
+
+    <img id="logo" src="logo.png" alt="Logo">
+    <audio id="recordedAudio" controls></audio>
+
+    <audio id="audioPlayer" autoplay>
+        Your browser does not support the audio element.
+    </audio>
+
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+
+        // download the audio file from S3
+        const createObjectUrlFromS3 = async (url) => {
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                throw new Error("Download failed.", { cause: response });
+            }
+
+            const blob = await response.blob();
+            return URL.createObjectURL(blob);
+        };
+
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(function (stream) {
+
+                // audio recording 
+                const audioContext = new AudioContext();
+                const input = audioContext.createMediaStreamSource(stream);
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.ondataavailable = function (event) {
+                    audioChunks.push(event.data);
+                };
+
+                // once recording is stopped send the audio to s3
+                mediaRecorder.onstop = function () {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/mp3' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    document.getElementById('recordedAudio').src = audioUrl;
+
+                    // Send recorded audio to server
+                    sendAudioToServer(audioBlob);
+                };
+            })
+            .catch(function (err) {
+                console.error('Error accessing media devices.', err);
+            });
+
+        // Record button to trigger a recording
+        document.getElementById('recordButton').addEventListener('mousedown', function () {
+            audioChunks = [];
+            mediaRecorder.start();
+            this.textContent = 'Recording';
+            this.classList.add('recording');
+        });
+
+        // On release stop recording and trigger upload
+        document.getElementById('recordButton').addEventListener('mouseup', function () {
+            mediaRecorder.stop();
+            this.textContent = 'Analyzing';
+            this.classList.remove('recording');
+            this.classList.add('analyzing');
+        });
+
+        // Trigger POST request on Seaplane 
+        const sendAudioToServer = async (audioBlob) => {
+            const formData = new FormData();
+            formData.append('file', audioBlob);
+            response = await fetch('http://localhost:8000', { method: "POST", body: formData });
+            const data = await response.json();
+            console.log(data);
+            const objectUrl = await createObjectUrlFromS3(data.url);
+            const audioEl = document.getElementById("audioPlayer");
+            audioEl.src = objectUrl;
+
+            // Update button text and class when audio starts playing
+            const recordButton = document.getElementById('recordButton');
+            recordButton.textContent = 'AI Talking';
+            recordButton.classList.remove('analyzing');
+            recordButton.classList.add('talking');
+
+            // Call the get endpoint for the second audio recording 
+            response = await fetch(`http://localhost:8000/?request_id=${data.request_id}`, { method: "GET" });
+            const data2 = await response.json();
+            console.log(data2);
+
+            // Only play the second audio if the app tells us to do so
+            if (data2.play_second_audio) {
+                const objectUrl2 = await createObjectUrlFromS3(data2.url);
+                const audioEl2 = document.getElementById("audioPlayer");
+                audioEl2.src = objectUrl2;
+
+                // Update button text and class when audio starts playing
+                const recordButton = document.getElementById('recordButton');
+                recordButton.textContent = 'AI Talking';
+                recordButton.classList.remove('analyzing');
+                recordButton.classList.add('talking');
+
+                // Reset button text and class when audio finishes playing
+                audioEl2.onended = function () {
+                    recordButton.textContent = 'Hold to Record';
+                    recordButton.classList.remove('talking');
+                };
+            } else {
+                // Reset button text and class if no second audio is played
+                const recordButton = document.getElementById('recordButton');
+                recordButton.textContent = 'Hold to Record';
+                recordButton.classList.remove('analyzing');
+            }
+        };
+
+    </script>
+</body>
+
+</html>
